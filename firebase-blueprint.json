@@ -1,0 +1,333 @@
+{
+  "entities": {
+    "Product": {
+      "title": "Product",
+      "description": "E-commerce skincare and cosmetics catalog item with live stock tracking.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 120,
+          "description": "Product display title"
+        },
+        "sku": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 40,
+          "pattern": "^[a-zA-Z0-9_-]+$",
+          "description": "Stock keeping unit identifier"
+        },
+        "category": {
+          "type": "string",
+          "enum": ["Skincare", "Makeup", "Hair Care", "Fragrance", "Body Care"],
+          "description": "Primary storefront category"
+        },
+        "price": {
+          "type": "number",
+          "description": "Current selling price in USD"
+        },
+        "compareAtPrice": {
+          "type": "number",
+          "description": "Original retail price before discount"
+        },
+        "stock": {
+          "type": "integer",
+          "description": "Available inventory units"
+        },
+        "lowStockThreshold": {
+          "type": "integer",
+          "description": "Threshold triggering low-stock alerts"
+        },
+        "rating": {
+          "type": "number",
+          "description": "Average customer rating (0-5)"
+        },
+        "reviewCount": {
+          "type": "integer",
+          "description": "Total verified customer reviews"
+        },
+        "badge": {
+          "type": "string",
+          "maxLength": 32,
+          "description": "Optional short storefront tag such as Best Seller or New"
+        },
+        "shortDescription": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 300,
+          "description": "Brief product summary"
+        },
+        "ingredients": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "Key botanical and active ingredients"
+        },
+        "sizeLabel": {
+          "type": "string",
+          "maxLength": 40,
+          "description": "Volume or weight label e.g. 30 ml"
+        },
+        "imageUrl": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300,
+          "description": "Local asset path for product photography"
+        },
+        "featured": {
+          "type": "boolean",
+          "description": "Whether product appears in Trending/Featured collection"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last update timestamp"
+        }
+      },
+      "required": [
+        "name",
+        "sku",
+        "category",
+        "price",
+        "stock",
+        "lowStockThreshold",
+        "rating",
+        "reviewCount",
+        "shortDescription",
+        "sizeLabel",
+        "imageUrl",
+        "featured",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Customer account details and saved shipping preferences.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "email": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 160
+        },
+        "phone": {
+          "type": "string",
+          "maxLength": 30
+        },
+        "defaultAddress": {
+          "type": "string",
+          "maxLength": 240
+        },
+        "defaultCity": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "role": {
+          "type": "string",
+          "enum": ["customer"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "displayName", "email", "role", "createdAt", "updatedAt"]
+    },
+    "Order": {
+      "title": "Order",
+      "description": "Customer order with payment method, shipping details, and fulfillment tracking state.",
+      "type": "object",
+      "properties": {
+        "orderNumber": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 32,
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "customerName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 100
+        },
+        "customerEmail": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 160
+        },
+        "customerPhone": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 30
+        },
+        "shippingAddress": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 250
+        },
+        "city": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 80
+        },
+        "postalCode": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 20
+        },
+        "items": {
+          "type": "array",
+          "description": "Bounded list of purchased line items (max 20)"
+        },
+        "subtotal": {
+          "type": "number"
+        },
+        "shippingFee": {
+          "type": "number"
+        },
+        "discountAmount": {
+          "type": "number"
+        },
+        "totalAmount": {
+          "type": "number"
+        },
+        "paymentMethod": {
+          "type": "string",
+          "enum": ["card", "bkash", "nagad", "cod"]
+        },
+        "paymentReference": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "paymentStatus": {
+          "type": "string",
+          "enum": ["pending", "paid", "refunded"]
+        },
+        "status": {
+          "type": "string",
+          "enum": ["placed", "processing", "shipped", "delivered", "cancelled"]
+        },
+        "trackingNote": {
+          "type": "string",
+          "maxLength": 240
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "orderNumber",
+        "userId",
+        "customerName",
+        "customerEmail",
+        "customerPhone",
+        "shippingAddress",
+        "city",
+        "postalCode",
+        "items",
+        "subtotal",
+        "shippingFee",
+        "discountAmount",
+        "totalAmount",
+        "paymentMethod",
+        "paymentStatus",
+        "status",
+        "trackingNote",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "OrderNotification": {
+      "title": "OrderNotification",
+      "description": "Real-time order confirmation, fulfillment status, and low-stock notifications.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "orderId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "orderNumber": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "title": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 120
+        },
+        "message": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 300
+        },
+        "type": {
+          "type": "string",
+          "enum": ["order_placed", "status_update", "low_stock"]
+        },
+        "read": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["userId", "title", "message", "type", "read", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/products/{productId}": {
+      "schema": { "$ref": "#/entities/Product" },
+      "description": "Public storefront product catalog and real-time stock quantities."
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Private customer profile documents restricted to owner or admin."
+    },
+    "/orders/{orderId}": {
+      "schema": { "$ref": "#/entities/Order" },
+      "description": "Customer orders, payment metadata, and shipment tracking status."
+    },
+    "/notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/OrderNotification" },
+      "description": "Order status updates and admin low-stock alerts."
+    }
+  }
+}

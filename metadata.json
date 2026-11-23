@@ -1,0 +1,6 @@
+{
+  "name": "Antixor Beauty — Clean Skincare & Cosmetics Store",
+  "description": "Responsive clean beauty e-commerce storefront with live Firestore stock management, shopping cart, multi-method checkout, order tracking, real-time notifications, and admin dashboard.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
