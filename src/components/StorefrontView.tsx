@@ -541,15 +541,6 @@ export function StorefrontView({
                 <li>
                   <button
                     type="button"
-                    onClick={() => setActiveView('admin')}
-                    className="hover:text-white transition-colors"
-                  >
-                    Store Admin
-                  </button>
-                </li>
-                <li>
-                  <button
-                    type="button"
                     onClick={() => handleCategoryClick('All')}
                     className="hover:text-white transition-colors"
                   >

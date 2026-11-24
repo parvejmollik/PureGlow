@@ -31,7 +31,18 @@ service cloud.firestore {
     }
 
     function isBootstrappedAdmin() {
-      return isVerified() && request.auth.token.email == 'parvejmollik2022@gmail.com';
+      return isVerified() && request.auth.token.email.lower() == 'parvejmollik2022@gmail.com';
+    }
+
+    function staffPermDocId() {
+      return request.auth.token.email.lower().replace('[^a-z0-9]', '_');
+    }
+
+    function hasStaffPermission(perm) {
+      return isVerified()
+        && exists(/databases/$(database)/documents/staff_permissions/$(staffPermDocId()))
+        && get(/databases/$(database)/documents/staff_permissions/$(staffPermDocId())).data.active == true
+        && perm in get(/databases/$(database)/documents/staff_permissions/$(staffPermDocId())).data.permissions;
     }
 
     function isAdmin() {
@@ -107,7 +118,7 @@ service cloud.firestore {
           'shippingAddress', 'city', 'postalCode', 'items', 'subtotal',
           'shippingFee', 'discountAmount', 'totalAmount', 'paymentMethod',
           'paymentReference', 'paymentStatus', 'status', 'trackingNote',
-          'createdAt', 'updatedAt'
+          'authorizedStaffEmails', 'createdAt', 'updatedAt'
         ])
         && data.orderNumber is string && data.orderNumber.size() >= 4 && data.orderNumber.size() <= 32 && data.orderNumber.matches('^[a-zA-Z0-9_\\-]+$')
         && data.userId is string && isValidId(data.userId)
@@ -127,6 +138,11 @@ service cloud.firestore {
         && data.paymentStatus in ['pending', 'paid', 'refunded']
         && data.status in ['placed', 'processing', 'shipped', 'delivered', 'cancelled']
         && data.trackingNote is string && data.trackingNote.size() <= 240
+        && (!('authorizedStaffEmails' in data) || (
+          data.authorizedStaffEmails is list
+          && data.authorizedStaffEmails.size() <= 10
+          && (data.authorizedStaffEmails.size() == 0 || data.authorizedStaffEmails[0] is string)
+        ))
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -146,6 +162,21 @@ service cloud.firestore {
         && data.createdAt is timestamp;
     }
 
+    function isValidStaffPermission(data) {
+      return data.keys().hasAll(['email', 'name', 'permissions', 'active', 'grantedBy', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['email', 'name', 'permissions', 'active', 'grantedBy', 'createdAt', 'updatedAt'])
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 160 && data.email == data.email.lower()
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 100
+        && data.permissions is list
+        && data.permissions.size() >= 1
+        && data.permissions.size() <= 4
+        && data.permissions.hasOnly(['view_overview', 'manage_stock', 'manage_products', 'manage_orders'])
+        && data.active is bool
+        && data.grantedBy == 'parvejmollik2022@gmail.com'
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
     // -------------------------------------------------------------------------
     // Collection Match Blocks
     // -------------------------------------------------------------------------
@@ -154,10 +185,29 @@ service cloud.firestore {
       allow list, create, update, delete: if false;
     }
 
+    match /staff_permissions/{permId} {
+      allow get: if isBootstrappedAdmin()
+        || (isVerified() && isValidId(permId) && existing().email == request.auth.token.email.lower());
+      allow list: if isBootstrappedAdmin()
+        || (isVerified() && resource.data.email == request.auth.token.email.lower());
+      allow create: if isBootstrappedAdmin()
+        && isValidId(permId)
+        && isValidStaffPermission(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isBootstrappedAdmin()
+        && isValidId(permId)
+        && isValidStaffPermission(incoming())
+        && incoming().email == existing().email
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time;
+      allow delete: if isBootstrappedAdmin() && isValidId(permId);
+    }
+
     match /products/{productId} {
       allow get: if isValidId(productId);
       allow list: if true;
-      allow create: if isAdmin()
+      allow create: if (isAdmin() || hasStaffPermission('manage_products'))
         && isValidId(productId)
         && isValidProduct(incoming())
         && incoming().createdAt == request.time
@@ -170,12 +220,17 @@ service cloud.firestore {
         && incoming().updatedAt == request.time
         && (
           isAdmin() ||
+          hasStaffPermission('manage_products') ||
+          (
+            hasStaffPermission('manage_stock')
+            && incoming().diff(existing()).affectedKeys().hasOnly(['stock', 'updatedAt'])
+          ) ||
           (
             incoming().diff(existing()).affectedKeys().hasOnly(['stock', 'updatedAt'])
             && incoming().stock < existing().stock
           )
         );
-      allow delete: if isAdmin() && isValidId(productId);
+      allow delete: if (isAdmin() || hasStaffPermission('manage_products')) && isValidId(productId);
     }
 
     match /users/{userId} {
@@ -206,9 +261,17 @@ service cloud.firestore {
     match /orders/{orderId} {
       allow get: if isSignedIn()
         && isValidId(orderId)
-        && (existing().userId == request.auth.uid || isAdmin());
+        && (existing().userId == request.auth.uid || isAdmin() || hasStaffPermission('manage_orders'));
       allow list: if isSignedIn()
-        && (resource.data.userId == request.auth.uid || isBootstrappedAdmin());
+        && (
+          resource.data.userId == request.auth.uid
+          || isBootstrappedAdmin()
+          || (
+            isVerified()
+            && 'authorizedStaffEmails' in resource.data
+            && request.auth.token.email.lower() in resource.data.authorizedStaffEmails
+          )
+        );
       allow create: if isVerified()
         && isValidId(orderId)
         && isValidOrder(incoming())
@@ -225,6 +288,10 @@ service cloud.firestore {
         && incoming().updatedAt == request.time
         && (
           isAdmin() ||
+          (
+            hasStaffPermission('manage_orders')
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'paymentStatus', 'trackingNote', 'updatedAt'])
+          ) ||
           (
             existing().userId == request.auth.uid
             && existing().status == 'placed'

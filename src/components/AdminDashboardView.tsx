@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   ArrowRight,
@@ -7,23 +7,29 @@ import {
   Cloud,
   DollarSign,
   Edit3,
+  KeyRound,
   Minus,
   Package,
   Plus,
   Search,
+  ShieldCheck,
   Trash2,
+  UserPlus,
   X,
 } from 'lucide-react';
 import { useStore, type ProductSaveInput } from '../context/StoreContext';
 import {
   PRODUCT_CATEGORIES,
+  STAFF_GRANTABLE_PERMISSIONS,
+  type AdminPermission,
   type OrderStatus,
   type Product,
+  type StaffPermission,
 } from '../types/commerce';
-import { formatCurrency, getNextOrderStatus } from '../utils/commerce';
+import { formatCurrency, getNextOrderStatus, hasAdminPermission } from '../utils/commerce';
 import { ProductImage } from './ProductImage';
 
-type AdminTab = 'overview' | 'inventory' | 'orders';
+type AdminTab = 'overview' | 'inventory' | 'orders' | 'permissions';
 
 const IMAGE_PRESETS = [
   {
@@ -48,23 +54,73 @@ export function AdminDashboardView() {
   const {
     products,
     orders,
-    isAdmin,
+    isOwner,
+    adminPermissions,
+    staffPermissions,
     firestoreCatalogActive,
     seedCatalogToFirestore,
-    signInWithGoogle,
     adjustProductStock,
     saveProduct,
     deleteProduct,
     advanceOrderStatus,
     updateOrderDetails,
+    saveStaffPermission,
+    toggleStaffPermissionActive,
+    deleteStaffPermission,
     setSelectedTrackOrderNumber,
     setActiveView,
   } = useStore();
 
-  const [tab, setTab] = useState<AdminTab>('overview');
+  const canViewOverview = isOwner || hasAdminPermission(adminPermissions, 'view_overview');
+  const canManageStock =
+    isOwner ||
+    hasAdminPermission(adminPermissions, 'manage_stock') ||
+    hasAdminPermission(adminPermissions, 'manage_products');
+  const canManageProducts = isOwner || hasAdminPermission(adminPermissions, 'manage_products');
+  const canManageOrders = isOwner || hasAdminPermission(adminPermissions, 'manage_orders');
+  const canManagePermissions = isOwner;
+
+  const availableTabs = useMemo(() => {
+    const tabs: { id: AdminTab; label: string }[] = [];
+    if (canViewOverview) tabs.push({ id: 'overview', label: 'Overview' });
+    if (canManageStock || canManageProducts) {
+      tabs.push({ id: 'inventory', label: `Inventory & Stock (${products.length})` });
+    }
+    if (canManageOrders) {
+      tabs.push({ id: 'orders', label: `Orders & Fulfillment (${orders.length})` });
+    }
+    if (canManagePermissions) {
+      tabs.push({ id: 'permissions', label: `Team Permissions (${staffPermissions.length})` });
+    }
+    return tabs;
+  }, [
+    canViewOverview,
+    canManageStock,
+    canManageProducts,
+    canManageOrders,
+    canManagePermissions,
+    products.length,
+    orders.length,
+    staffPermissions.length,
+  ]);
+
+  const [tab, setTab] = useState<AdminTab>(() => availableTabs[0]?.id ?? 'inventory');
   const [invSearch, setInvSearch] = useState('');
   const [lowStockOnly, setLowStockOnly] = useState(false);
   const [orderStatusFilter, setOrderStatusFilter] = useState<OrderStatus | 'all'>('all');
+
+  useEffect(() => {
+    if (availableTabs.length > 0 && !availableTabs.some((t) => t.id === tab)) {
+      setTab(availableTabs[0].id);
+    }
+  }, [availableTabs, tab]);
+
+  const [staffEmail, setStaffEmail] = useState('');
+  const [staffName, setStaffName] = useState('');
+  const [staffSelectedPerms, setStaffSelectedPerms] = useState<AdminPermission[]>([
+    'manage_orders',
+  ]);
+  const [staffFormError, setStaffFormError] = useState('');
 
   const [productModalOpen, setProductModalOpen] = useState(false);
   const [productFormError, setProductFormError] = useState('');
@@ -166,13 +222,44 @@ export function AdminDashboardView() {
     setProductModalOpen(false);
   };
 
+  const handleTogglePermOption = (permId: AdminPermission) => {
+    setStaffSelectedPerms((prev) =>
+      prev.includes(permId) ? prev.filter((p) => p !== permId) : [...prev, permId]
+    );
+  };
+
+  const handleSaveStaff = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setStaffFormError('');
+    const res = await saveStaffPermission({
+      email: staffEmail,
+      name: staffName,
+      permissions: staffSelectedPerms,
+      active: true,
+    });
+    if (!res.ok) {
+      setStaffFormError(res.error || 'Could not save team permissions.');
+      return;
+    }
+    setStaffEmail('');
+    setStaffName('');
+    setStaffSelectedPerms(['manage_orders']);
+  };
+
+  const handleEditStaff = (entry: StaffPermission) => {
+    setStaffFormError('');
+    setStaffEmail(entry.email);
+    setStaffName(entry.name);
+    setStaffSelectedPerms(entry.permissions);
+  };
+
   return (
     <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-10">
       {/* Top Bar */}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-6 border-b border-[#E6E2DA] mb-8">
         <div>
           <p className="text-xs font-medium uppercase tracking-[0.14em] text-[#5B6B66] mb-1">
-            Store Operations Console
+            {isOwner ? 'Owner Operations Console' : 'Delegated Staff Console'}
           </p>
           <h1 className="font-display text-3xl sm:text-4xl font-semibold text-[#172320]">
             Admin Dashboard
@@ -180,41 +267,35 @@ export function AdminDashboardView() {
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
-          {isAdmin ? (
-            <>
-              <span className="inline-flex items-center gap-1.5 text-xs font-medium text-[#15803D] bg-[#F0FDF4] border border-[#BBF7D0] px-3 py-2 rounded-lg">
-                <Cloud className="w-4 h-4" aria-hidden="true" />
-                {firestoreCatalogActive ? 'Firestore Live Sync' : 'Admin Connected'}
-              </span>
-              {!firestoreCatalogActive && (
-                <button
-                  type="button"
-                  onClick={() => void seedCatalogToFirestore()}
-                  className="px-4 py-2 bg-[#103C32] text-white text-xs font-semibold rounded-lg hover:bg-[#0B2B24] transition-colors"
-                >
-                  Publish Catalog to Firestore
-                </button>
-              )}
-            </>
-          ) : (
+          <span className="inline-flex items-center gap-1.5 text-xs font-medium text-[#15803D] bg-[#F0FDF4] border border-[#BBF7D0] px-3 py-2 rounded-lg">
+            <Cloud className="w-4 h-4" aria-hidden="true" />
+            {isOwner
+              ? firestoreCatalogActive
+                ? 'Owner · Firestore Live Sync'
+                : 'Owner · Full Access'
+              : `Staff · ${adminPermissions.length} Permission${adminPermissions.length === 1 ? '' : 's'}`}
+          </span>
+
+          {!firestoreCatalogActive && canManageProducts && (
             <button
               type="button"
-              onClick={() => void signInWithGoogle()}
-              className="px-4 py-2 bg-white border border-[#E6E2DA] text-[#172320] text-xs font-medium rounded-lg hover:border-[#103C32] transition-colors flex items-center gap-2"
+              onClick={() => void seedCatalogToFirestore()}
+              className="px-4 py-2 bg-[#103C32] text-white text-xs font-semibold rounded-lg hover:bg-[#0B2B24] transition-colors"
             >
-              <Cloud className="w-3.5 h-3.5 text-[#103C32]" aria-hidden="true" />
-              <span>Preview Mode · Sign in as Admin for Cloud Sync</span>
+              Publish Catalog to Firestore
             </button>
           )}
 
-          <button
-            type="button"
-            onClick={openCreateProduct}
-            className="px-4 py-2.5 bg-[#103C32] text-white text-xs font-semibold rounded-lg hover:bg-[#0B2B24] transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0"
-          >
-            <Plus className="w-4 h-4" aria-hidden="true" />
-            <span>Add Product</span>
-          </button>
+          {canManageProducts && (
+            <button
+              type="button"
+              onClick={openCreateProduct}
+              className="px-4 py-2.5 bg-[#103C32] text-white text-xs font-semibold rounded-lg hover:bg-[#0B2B24] transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0"
+            >
+              <Plus className="w-4 h-4" aria-hidden="true" />
+              <span>Add Product</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -224,13 +305,7 @@ export function AdminDashboardView() {
         aria-label="Admin Dashboard Sections"
         className="flex items-center gap-2 overflow-x-auto pb-2 mb-8"
       >
-        {(
-          [
-            { id: 'overview', label: 'Overview' },
-            { id: 'inventory', label: `Inventory & Stock (${products.length})` },
-            { id: 'orders', label: `Orders & Fulfillment (${orders.length})` },
-          ] as { id: AdminTab; label: string }[]
-        ).map((item) => (
+        {availableTabs.map((item) => (
           <button
             key={item.id}
             role="tab"
@@ -248,8 +323,9 @@ export function AdminDashboardView() {
         ))}
       </div>
 
-      {/* KPI Strip */}
-      <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+      {/* KPI Strip (shown only when View Overview is granted) */}
+      {canViewOverview && (
+        <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
         <div className="bg-white border border-[#E6E2DA] rounded-xl p-5">
           <div className="flex items-center justify-between text-[#5B6B66] mb-2">
             <span className="text-xs font-medium">Gross Revenue</span>
@@ -300,22 +376,25 @@ export function AdminDashboardView() {
             {metrics.lowStockCount > 0 ? 'Needs restock soon' : 'All SKUs healthy'}
           </p>
         </div>
-      </section>
+        </section>
+      )}
 
       {/* TAB 1: OVERVIEW */}
-      {tab === 'overview' && (
+      {tab === 'overview' && canViewOverview && (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
           <section className="lg:col-span-7 bg-white border border-[#E6E2DA] rounded-xl overflow-hidden">
             <div className="px-6 py-4 border-b border-[#E6E2DA] flex items-center justify-between">
               <h2 className="text-base font-semibold text-[#172320]">Recent Orders</h2>
-              <button
-                type="button"
-                onClick={() => setTab('orders')}
-                className="text-xs font-medium text-[#103C32] hover:underline flex items-center gap-1"
-              >
-                <span>Manage all</span>
-                <ArrowRight className="w-3.5 h-3.5" aria-hidden="true" />
-              </button>
+              {canManageOrders && (
+                <button
+                  type="button"
+                  onClick={() => setTab('orders')}
+                  className="text-xs font-medium text-[#103C32] hover:underline flex items-center gap-1"
+                >
+                  <span>Manage all</span>
+                  <ArrowRight className="w-3.5 h-3.5" aria-hidden="true" />
+                </button>
+              )}
             </div>
             <div className="divide-y divide-[#F0ECE4]">
               {orders.slice(0, 5).map((ord) => {
@@ -337,7 +416,7 @@ export function AdminDashboardView() {
                       </p>
                     </div>
                     <div className="flex items-center gap-2">
-                      {nextStatus && (
+                      {canManageOrders && nextStatus && (
                         <button
                           type="button"
                           onClick={() => void advanceOrderStatus(ord.id)}
@@ -366,16 +445,18 @@ export function AdminDashboardView() {
           <section className="lg:col-span-5 bg-white border border-[#E6E2DA] rounded-xl overflow-hidden">
             <div className="px-6 py-4 border-b border-[#E6E2DA] flex items-center justify-between">
               <h2 className="text-base font-semibold text-[#172320]">Restock Priority</h2>
-              <button
-                type="button"
-                onClick={() => {
-                  setLowStockOnly(true);
-                  setTab('inventory');
-                }}
-                className="text-xs font-medium text-[#103C32] hover:underline"
-              >
-                Open Inventory
-              </button>
+              {(canManageStock || canManageProducts) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setLowStockOnly(true);
+                    setTab('inventory');
+                  }}
+                  className="text-xs font-medium text-[#103C32] hover:underline"
+                >
+                  Open Inventory
+                </button>
+              )}
             </div>
             <div className="divide-y divide-[#F0ECE4]">
               {products
@@ -403,13 +484,15 @@ export function AdminDashboardView() {
                           {p.stock} left · Threshold {p.lowStockThreshold}
                         </p>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => void adjustProductStock(p.id, 10)}
-                        className="px-3 py-1.5 border border-[#E6E2DA] text-xs font-semibold text-[#103C32] rounded-lg hover:bg-[#FAF9F6] whitespace-nowrap shrink-0"
-                      >
-                        +10 Stock
-                      </button>
+                      {canManageStock && (
+                        <button
+                          type="button"
+                          onClick={() => void adjustProductStock(p.id, 10)}
+                          className="px-3 py-1.5 border border-[#E6E2DA] text-xs font-semibold text-[#103C32] rounded-lg hover:bg-[#FAF9F6] whitespace-nowrap shrink-0"
+                        >
+                          +10 Stock
+                        </button>
+                      )}
                     </div>
                   );
                 })}
@@ -419,7 +502,7 @@ export function AdminDashboardView() {
       )}
 
       {/* TAB 2: INVENTORY & STOCK MANAGEMENT */}
-      {tab === 'inventory' && (
+      {tab === 'inventory' && (canManageStock || canManageProducts) && (
         <section className="bg-white border border-[#E6E2DA] rounded-xl overflow-hidden">
           <div className="p-4 sm:p-5 border-b border-[#E6E2DA] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="relative">
@@ -495,35 +578,41 @@ export function AdminDashboardView() {
                         {formatCurrency(product.price)}
                       </td>
                       <td className="py-3 px-4">
-                        <div className="flex items-center justify-center gap-1.5">
-                          <button
-                            type="button"
-                            aria-label={`Decrease stock for ${product.name}`}
-                            disabled={product.stock <= 0}
-                            onClick={() => void adjustProductStock(product.id, -1)}
-                            className="p-1.5 border border-[#E6E2DA] rounded hover:bg-[#FAF9F6] disabled:opacity-40"
-                          >
-                            <Minus className="w-3.5 h-3.5" />
-                          </button>
-                          <span className="w-10 text-center font-mono text-xs font-semibold tabular-nums">
+                        {canManageStock ? (
+                          <div className="flex items-center justify-center gap-1.5">
+                            <button
+                              type="button"
+                              aria-label={`Decrease stock for ${product.name}`}
+                              disabled={product.stock <= 0}
+                              onClick={() => void adjustProductStock(product.id, -1)}
+                              className="p-1.5 border border-[#E6E2DA] rounded hover:bg-[#FAF9F6] disabled:opacity-40"
+                            >
+                              <Minus className="w-3.5 h-3.5" />
+                            </button>
+                            <span className="w-10 text-center font-mono text-xs font-semibold tabular-nums">
+                              {product.stock}
+                            </span>
+                            <button
+                              type="button"
+                              aria-label={`Increase stock for ${product.name}`}
+                              onClick={() => void adjustProductStock(product.id, 1)}
+                              className="p-1.5 border border-[#E6E2DA] rounded hover:bg-[#FAF9F6]"
+                            >
+                              <Plus className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void adjustProductStock(product.id, 10)}
+                              className="ml-1 px-2 py-1 text-[11px] font-medium border border-[#E6E2DA] rounded hover:bg-[#FAF9F6]"
+                            >
+                              +10
+                            </button>
+                          </div>
+                        ) : (
+                          <p className="text-center font-mono text-xs font-semibold tabular-nums text-[#5B6B66]">
                             {product.stock}
-                          </span>
-                          <button
-                            type="button"
-                            aria-label={`Increase stock for ${product.name}`}
-                            onClick={() => void adjustProductStock(product.id, 1)}
-                            className="p-1.5 border border-[#E6E2DA] rounded hover:bg-[#FAF9F6]"
-                          >
-                            <Plus className="w-3.5 h-3.5" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => void adjustProductStock(product.id, 10)}
-                            className="ml-1 px-2 py-1 text-[11px] font-medium border border-[#E6E2DA] rounded hover:bg-[#FAF9F6]"
-                          >
-                            +10
-                          </button>
-                        </div>
+                          </p>
+                        )}
                       </td>
                       <td className="py-3 px-4 text-xs font-medium">
                         {out ? (
@@ -538,24 +627,28 @@ export function AdminDashboardView() {
                         )}
                       </td>
                       <td className="py-3 px-4 text-right">
-                        <div className="inline-flex items-center gap-1">
-                          <button
-                            type="button"
-                            onClick={() => openEditProduct(product)}
-                            aria-label={`Edit ${product.name}`}
-                            className="p-2 text-[#5B6B66] hover:text-[#103C32] rounded-lg hover:bg-[#EFECE4]"
-                          >
-                            <Edit3 className="w-4 h-4" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => void deleteProduct(product.id)}
-                            aria-label={`Delete ${product.name}`}
-                            className="p-2 text-[#5B6B66] hover:text-[#B91C1C] rounded-lg hover:bg-[#FEF2F2]"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </div>
+                        {canManageProducts ? (
+                          <div className="inline-flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => openEditProduct(product)}
+                              aria-label={`Edit ${product.name}`}
+                              className="p-2 text-[#5B6B66] hover:text-[#103C32] rounded-lg hover:bg-[#EFECE4]"
+                            >
+                              <Edit3 className="w-4 h-4" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void deleteProduct(product.id)}
+                              aria-label={`Delete ${product.name}`}
+                              className="p-2 text-[#5B6B66] hover:text-[#B91C1C] rounded-lg hover:bg-[#FEF2F2]"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        ) : (
+                          <span className="text-xs text-[#7D8C87]">Stock Only</span>
+                        )}
                       </td>
                     </tr>
                   );
@@ -567,7 +660,7 @@ export function AdminDashboardView() {
       )}
 
       {/* TAB 3: ORDERS & FULFILLMENT */}
-      {tab === 'orders' && (
+      {tab === 'orders' && canManageOrders && (
         <section className="bg-white border border-[#E6E2DA] rounded-xl overflow-hidden">
           <div className="p-4 sm:p-5 border-b border-[#E6E2DA] flex flex-wrap items-center gap-2">
             {(['all', 'placed', 'processing', 'shipped', 'delivered', 'cancelled'] as const).map(
@@ -673,8 +766,191 @@ export function AdminDashboardView() {
         </section>
       )}
 
+      {/* TAB 4: OWNER-ONLY TEAM PERMISSIONS */}
+      {tab === 'permissions' && canManagePermissions && (
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+          <section className="lg:col-span-5 bg-white border border-[#E6E2DA] rounded-xl p-6">
+            <div className="flex items-center gap-2.5 mb-2">
+              <UserPlus className="w-5 h-5 text-[#103C32]" aria-hidden="true" />
+              <h2 className="text-base font-semibold text-[#172320]">
+                Grant Scoped Admin Access
+              </h2>
+            </div>
+            <p className="text-xs text-[#5B6B66] leading-relaxed mb-5">
+              Assign specific capabilities to verified Google accounts. Team members can only see
+              tabs and perform actions you select below.
+            </p>
+
+            {staffFormError && (
+              <div className="mb-4 p-3 rounded-lg bg-[#FEF2F2] border border-[#FECACA] text-xs font-medium text-[#B91C1C]">
+                {staffFormError}
+              </div>
+            )}
+
+            <form onSubmit={handleSaveStaff} className="space-y-4">
+              <div>
+                <label
+                  htmlFor="perm-staff-email"
+                  className="block text-xs font-medium text-[#465752] mb-1"
+                >
+                  Google Email Address
+                </label>
+                <input
+                  id="perm-staff-email"
+                  type="email"
+                  required
+                  value={staffEmail}
+                  onChange={(e) => setStaffEmail(e.target.value)}
+                  placeholder="manager@example.com"
+                  className="w-full px-3.5 py-2 border border-[#E6E2DA] rounded-lg text-sm focus:outline-none focus:border-[#103C32]"
+                />
+              </div>
+
+              <div>
+                <label
+                  htmlFor="perm-staff-name"
+                  className="block text-xs font-medium text-[#465752] mb-1"
+                >
+                  Name / Role Label
+                </label>
+                <input
+                  id="perm-staff-name"
+                  type="text"
+                  required
+                  value={staffName}
+                  onChange={(e) => setStaffName(e.target.value)}
+                  placeholder="Operations Manager"
+                  className="w-full px-3.5 py-2 border border-[#E6E2DA] rounded-lg text-sm focus:outline-none focus:border-[#103C32]"
+                />
+              </div>
+
+              <div>
+                <span className="block text-xs font-medium text-[#465752] mb-2">
+                  Allowed Capabilities
+                </span>
+                <div className="space-y-2">
+                  {STAFF_GRANTABLE_PERMISSIONS.map((perm) => {
+                    const checked = staffSelectedPerms.includes(perm.id);
+                    return (
+                      <label
+                        key={perm.id}
+                        className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
+                          checked
+                            ? 'border-[#103C32] bg-[#FAF9F6]'
+                            : 'border-[#E6E2DA] hover:bg-[#FAF9F6]'
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => handleTogglePermOption(perm.id)}
+                          className="mt-0.5 accent-[#103C32]"
+                        />
+                        <div className="min-w-0">
+                          <p className="text-xs font-semibold text-[#172320]">{perm.label}</p>
+                          <p className="text-[11px] text-[#5B6B66] mt-0.5">{perm.description}</p>
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                className="w-full py-2.5 px-4 bg-[#103C32] text-white text-xs font-semibold rounded-lg hover:bg-[#0B2B24] transition-colors flex items-center justify-center gap-2"
+              >
+                <KeyRound className="w-4 h-4" aria-hidden="true" />
+                <span>Save Team Permissions</span>
+              </button>
+            </form>
+          </section>
+
+          <section className="lg:col-span-7 bg-white border border-[#E6E2DA] rounded-xl overflow-hidden">
+            <div className="px-6 py-4 border-b border-[#E6E2DA] flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-[#103C32]" aria-hidden="true" />
+                <h2 className="text-base font-semibold text-[#172320]">
+                  Authorized Team Members ({staffPermissions.length})
+                </h2>
+              </div>
+              <span className="text-xs text-[#5B6B66]">Owner access cannot be revoked</span>
+            </div>
+
+            {staffPermissions.length === 0 ? (
+              <div className="p-8 text-center">
+                <p className="text-sm font-medium text-[#172320]">No delegated staff yet</p>
+                <p className="text-xs text-[#5B6B66] mt-1">
+                  Only you ({'parvejmollik2022@gmail.com'}) currently have access to the Admin
+                  Dashboard.
+                </p>
+              </div>
+            ) : (
+              <div className="divide-y divide-[#F0ECE4]">
+                {staffPermissions.map((entry) => (
+                  <div
+                    key={entry.id}
+                    className="px-6 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4"
+                  >
+                    <div className="min-w-0 space-y-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="text-sm font-semibold text-[#172320]">{entry.name}</p>
+                        <span
+                          className={`text-[11px] font-semibold ${
+                            entry.active ? 'text-[#15803D]' : 'text-[#D97706]'
+                          }`}
+                        >
+                          · {entry.active ? 'Active' : 'Paused'}
+                        </span>
+                      </div>
+                      <p className="text-xs font-mono text-[#5B6B66] truncate">{entry.email}</p>
+                      <p className="text-xs text-[#374742]">
+                        Access:{' '}
+                        {entry.permissions
+                          .map(
+                            (p) =>
+                              STAFF_GRANTABLE_PERMISSIONS.find((item) => item.id === p)?.label ?? p
+                          )
+                          .join(', ')}
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => handleEditStaff(entry)}
+                        className="px-3 py-1.5 border border-[#E6E2DA] text-xs font-medium text-[#172320] rounded-lg hover:bg-[#FAF9F6]"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void toggleStaffPermissionActive(entry.id, !entry.active)
+                        }
+                        className="px-3 py-1.5 border border-[#E6E2DA] text-xs font-medium text-[#172320] rounded-lg hover:bg-[#FAF9F6]"
+                      >
+                        {entry.active ? 'Pause' : 'Resume'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void deleteStaffPermission(entry.id)}
+                        aria-label={`Revoke access for ${entry.email}`}
+                        className="p-2 text-[#5B6B66] hover:text-[#B91C1C] rounded-lg hover:bg-[#FEF2F2]"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        </div>
+      )}
+
       {/* Add / Edit Product Modal */}
-      {productModalOpen && (
+      {productModalOpen && canManageProducts && (
         <div
           className="fixed inset-0 z-50 bg-black/50 backdrop-blur-[2px] flex items-center justify-center p-4"
           role="dialog"

@@ -11,6 +11,7 @@ export function Header({ onSelectCategoryAndScroll }: HeaderProps) {
   const {
     activeView,
     setActiveView,
+    canAccessAdmin,
     cartCount,
     setIsCartOpen,
     setIsAuthModalOpen,
@@ -127,17 +128,19 @@ export function Header({ onSelectCategoryAndScroll }: HeaderProps) {
           >
             Track Order
           </button>
-          <button
-            type="button"
-            onClick={() => navigate('admin')}
-            className={`whitespace-nowrap shrink-0 py-1 border-b-2 transition-colors ${
-              activeView === 'admin'
-                ? 'border-[#103C32] text-[#103C32]'
-                : 'border-transparent hover:text-[#103C32]'
-            }`}
-          >
-            Admin
-          </button>
+          {canAccessAdmin && (
+            <button
+              type="button"
+              onClick={() => navigate('admin')}
+              className={`whitespace-nowrap shrink-0 py-1 border-b-2 transition-colors ${
+                activeView === 'admin'
+                  ? 'border-[#103C32] text-[#103C32]'
+                  : 'border-transparent hover:text-[#103C32]'
+              }`}
+            >
+              Admin
+            </button>
+          )}
         </nav>
 
         {/* Zone 3: Actions (Notifications, Account, Primary Bag CTA) */}
@@ -166,7 +169,7 @@ export function Header({ onSelectCategoryAndScroll }: HeaderProps) {
               >
                 <div className="px-4 py-3 border-b border-[#E6E2DA] flex items-center justify-between">
                   <span className="text-sm font-semibold text-[#172320]">
-                    Order &amp; Stock Alerts
+                    {canAccessAdmin ? 'Order & Stock Alerts' : 'Order Updates'}
                   </span>
                   {unreadNotificationCount > 0 && (
                     <button
@@ -278,13 +281,15 @@ export function Header({ onSelectCategoryAndScroll }: HeaderProps) {
           >
             Track Order
           </button>
-          <button
-            type="button"
-            onClick={() => navigate('admin')}
-            className="w-full text-left px-3 py-3 rounded-lg text-sm font-medium text-[#172320] hover:bg-[#EFECE4]"
-          >
-            Admin Dashboard
-          </button>
+          {canAccessAdmin && (
+            <button
+              type="button"
+              onClick={() => navigate('admin')}
+              className="w-full text-left px-3 py-3 rounded-lg text-sm font-medium text-[#172320] hover:bg-[#EFECE4]"
+            >
+              Admin Dashboard
+            </button>
+          )}
         </nav>
       )}
     </header>

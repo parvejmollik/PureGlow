@@ -5,12 +5,16 @@ import {
   calculateCartTotals,
   canAdjustCartQuantity,
   canCustomerCancelOrder,
+  emailToPermissionDocId,
   filterAndSortProducts,
   formatCurrency,
   getNextOrderStatus,
+  hasAdminPermission,
+  resolveAdminAccess,
   validateCheckoutForm,
 } from './commerce';
 import { SEED_PRODUCTS } from '../data/seedCatalog';
+import type { StaffPermission } from '../types/commerce';
 
 test('formatCurrency formats amounts in Taka (৳)', () => {
   assert.equal(formatCurrency(38), '৳38.00');
@@ -103,4 +107,62 @@ test('filterAndSortProducts filters by category/search and sorts by price', () =
 
   const allAsc = filterAndSortProducts(SEED_PRODUCTS, 'All', '', 'price_asc');
   assert.ok(allAsc[0].price <= allAsc[1].price);
+});
+
+test('resolveAdminAccess grants full access to verified owner and scopes staff permissions strictly', () => {
+  const staff: StaffPermission[] = [
+    {
+      id: 'staff_at_example_dot_com',
+      email: 'staff@example.com',
+      name: 'Inventory Clerk',
+      permissions: ['manage_stock', 'manage_permissions'],
+      active: true,
+      grantedBy: 'parvejmollik2022@gmail.com',
+      createdAtIso: '2026-11-23T00:00:00.000Z',
+      updatedAtIso: '2026-11-23T00:00:00.000Z',
+    },
+    {
+      id: 'paused_at_example_dot_com',
+      email: 'paused@example.com',
+      name: 'Paused Staff',
+      permissions: ['manage_orders'],
+      active: false,
+      grantedBy: 'parvejmollik2022@gmail.com',
+      createdAtIso: '2026-11-23T00:00:00.000Z',
+      updatedAtIso: '2026-11-23T00:00:00.000Z',
+    },
+  ];
+
+  // Unauthenticated / random customer gets zero admin access
+  const anon = resolveAdminAccess(null, false, staff);
+  assert.equal(anon.canAccessAdmin, false);
+  assert.equal(anon.permissions.length, 0);
+
+  const shopper = resolveAdminAccess('customer@example.com', true, staff);
+  assert.equal(shopper.canAccessAdmin, false);
+
+  // Unverified owner email gets zero access
+  const unverifiedOwner = resolveAdminAccess('parvejmollik2022@gmail.com', false, staff);
+  assert.equal(unverifiedOwner.canAccessAdmin, false);
+
+  // Verified owner gets all 5 permissions
+  const owner = resolveAdminAccess('parvejmollik2022@gmail.com', true, staff);
+  assert.equal(owner.isOwner, true);
+  assert.equal(owner.canAccessAdmin, true);
+  assert.equal(hasAdminPermission(owner.permissions, 'manage_permissions'), true);
+  assert.equal(hasAdminPermission(owner.permissions, 'manage_orders'), true);
+
+  // Staff gets ONLY granted permissions (and never manage_permissions)
+  const permitted = resolveAdminAccess('staff@example.com', true, staff);
+  assert.equal(permitted.isOwner, false);
+  assert.equal(permitted.canAccessAdmin, true);
+  assert.equal(hasAdminPermission(permitted.permissions, 'manage_stock'), true);
+  assert.equal(hasAdminPermission(permitted.permissions, 'manage_orders'), false);
+  assert.equal(hasAdminPermission(permitted.permissions, 'manage_permissions'), false);
+
+  // Paused staff loses access immediately
+  const paused = resolveAdminAccess('paused@example.com', true, staff);
+  assert.equal(paused.canAccessAdmin, false);
+
+  assert.equal(emailToPermissionDocId('Alice.Smith@Gmail.com'), 'alice_smith_gmail_com');
 });

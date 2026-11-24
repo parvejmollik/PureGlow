@@ -7,7 +7,9 @@ export function AuthModal() {
     isAuthModalOpen,
     setIsAuthModalOpen,
     user,
-    isAdmin,
+    isOwner,
+    canAccessAdmin,
+    adminPermissions,
     signInWithGoogle,
     logout,
     orders,
@@ -55,8 +57,7 @@ export function AuthModal() {
         {!user ? (
           <div>
             <p className="text-sm text-[#5B6B66] leading-relaxed mb-6">
-              Sign in with Google to sync your orders, receive live shipment alerts, and manage
-              store inventory if you are an administrator.
+              Sign in with Google to sync your orders and receive live shipment alerts.
             </p>
             <button
               type="button"
@@ -74,7 +75,13 @@ export function AuthModal() {
               <p className="text-xs text-[#5B6B66] mt-0.5">{user.email}</p>
               <div className="mt-2.5 flex items-center gap-2 text-xs font-medium text-[#103C32]">
                 <Shield className="w-3.5 h-3.5" aria-hidden="true" />
-                <span>{isAdmin ? 'Verified Store Administrator' : 'Verified Customer'}</span>
+                <span>
+                  {isOwner
+                    ? 'Store Owner (Full Access)'
+                    : canAccessAdmin
+                    ? `Authorized Staff (${adminPermissions.length} capability${adminPermissions.length === 1 ? '' : 's'})`
+                    : 'Verified Customer'}
+                </span>
               </div>
             </div>
 
@@ -116,7 +123,7 @@ export function AuthModal() {
             </div>
 
             <div className="flex gap-2.5 pt-2">
-              {isAdmin && (
+              {canAccessAdmin && (
                 <button
                   type="button"
                   onClick={() => {

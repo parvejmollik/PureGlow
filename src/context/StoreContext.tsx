@@ -22,7 +22,6 @@ import {
 } from 'firebase/firestore';
 import {
   auth,
-  BOOTSTRAPPED_ADMIN_EMAIL,
   db,
   googleProvider,
   handleFirestoreError,
@@ -31,6 +30,7 @@ import {
 } from '../lib/firebase';
 import { SEED_NOTIFICATIONS, SEED_ORDERS, SEED_PRODUCTS } from '../data/seedCatalog';
 import type {
+  AdminPermission,
   AppView,
   CartItem,
   CheckoutFormInput,
@@ -39,14 +39,21 @@ import type {
   OrderStatus,
   PaymentStatus,
   Product,
+  StaffPermission,
 } from '../types/commerce';
 import {
+  OWNER_ADMIN_EMAIL,
   applyOrderStockDeductions,
   calculateCartTotals,
   canAdjustCartQuantity,
+  emailToPermissionDocId,
   generateOrderNumber,
   getDefaultTrackingNote,
   getNextOrderStatus,
+  hasAdminPermission,
+  isOwnerAccount,
+  normalizeEmail,
+  resolveAdminAccess,
   sanitizeText,
   validateCheckoutForm,
 } from '../utils/commerce';
@@ -56,6 +63,7 @@ const STORAGE_KEYS = {
   products: 'antixor_products_v1',
   orders: 'antixor_orders_v1',
   notifications: 'antixor_notifications_v1',
+  staffPermissions: 'antixor_staff_perms_v1',
 } as const;
 
 export interface ToastNotice {
@@ -81,6 +89,13 @@ export interface ProductSaveInput {
   featured: boolean;
 }
 
+export interface StaffPermissionSaveInput {
+  email: string;
+  name: string;
+  permissions: AdminPermission[];
+  active?: boolean;
+}
+
 interface StoreContextValue {
   activeView: AppView;
   setActiveView: (view: AppView) => void;
@@ -89,7 +104,11 @@ interface StoreContextValue {
 
   user: User | null;
   authReady: boolean;
+  isOwner: boolean;
+  canAccessAdmin: boolean;
   isAdmin: boolean;
+  adminPermissions: AdminPermission[];
+  staffPermissions: StaffPermission[];
   firestoreConnected: boolean;
   firestoreCatalogActive: boolean;
 
@@ -134,6 +153,12 @@ interface StoreContextValue {
   deleteProduct: (productId: string) => Promise<void>;
   seedCatalogToFirestore: () => Promise<void>;
 
+  saveStaffPermission: (
+    input: StaffPermissionSaveInput
+  ) => Promise<{ ok: boolean; error?: string }>;
+  toggleStaffPermissionActive: (permId: string, active: boolean) => Promise<void>;
+  deleteStaffPermission: (permId: string) => Promise<void>;
+
   markNotificationRead: (notificationId: string) => Promise<void>;
   markAllNotificationsRead: () => Promise<void>;
 }
@@ -166,13 +191,21 @@ function timestampToIso(value: unknown): string {
   return new Date().toISOString();
 }
 
+function getInitialViewFromLocation(): AppView {
+  if (typeof window === 'undefined') return 'storefront';
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('admin') === '1' || window.location.hash === '#admin') {
+    return 'admin';
+  }
+  return 'storefront';
+}
+
 export function StoreProvider({ children }: { children: React.ReactNode }) {
-  const [activeView, setActiveView] = useState<AppView>('storefront');
+  const [activeView, setActiveView] = useState<AppView>(() => getInitialViewFromLocation());
   const [selectedTrackOrderNumber, setSelectedTrackOrderNumber] = useState<string>('AB-1042');
 
   const [user, setUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
-  const [hasAdminDoc, setHasAdminDoc] = useState(false);
   const [firestoreConnected, setFirestoreConnected] = useState(false);
   const [firestoreCatalogActive, setFirestoreCatalogActive] = useState(false);
 
@@ -192,6 +225,12 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   );
   const [firestoreNotifications, setFirestoreNotifications] = useState<OrderNotification[]>([]);
 
+  const [localStaffPermissions, setLocalStaffPermissions] = useState<StaffPermission[]>(() =>
+    readStorage<StaffPermission[]>(STORAGE_KEYS.staffPermissions, [])
+  );
+  const [firestoreStaffPermissions, setFirestoreStaffPermissions] = useState<StaffPermission[]>([]);
+  const [firestoreStaffSynced, setFirestoreStaffSynced] = useState(false);
+
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [quickViewProduct, setQuickViewProduct] = useState<Product | null>(null);
@@ -207,10 +246,22 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
   const dismissToast = useCallback(() => setToast(null), []);
 
-  const isAdmin = useMemo(() => {
-    if (!user || !user.emailVerified) return false;
-    return user.email === BOOTSTRAPPED_ADMIN_EMAIL || hasAdminDoc;
-  }, [user, hasAdminDoc]);
+  const staffPermissions = useMemo(() => {
+    if (user && user.emailVerified && firestoreStaffSynced) {
+      return firestoreStaffPermissions;
+    }
+    return localStaffPermissions;
+  }, [user, firestoreStaffSynced, firestoreStaffPermissions, localStaffPermissions]);
+
+  const adminAccess = useMemo(
+    () => resolveAdminAccess(user?.email, user?.emailVerified, staffPermissions),
+    [user?.email, user?.emailVerified, staffPermissions]
+  );
+
+  const isOwner = adminAccess.isOwner;
+  const canAccessAdmin = adminAccess.canAccessAdmin;
+  const adminPermissions = adminAccess.permissions;
+  const isAdmin = canAccessAdmin;
 
   // Persist local fallback state
   useEffect(() => {
@@ -229,6 +280,10 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     writeStorage(STORAGE_KEYS.notifications, localNotifications);
   }, [localNotifications]);
 
+  useEffect(() => {
+    writeStorage(STORAGE_KEYS.staffPermissions, localStaffPermissions);
+  }, [localStaffPermissions]);
+
   // Startup Firestore connectivity check
   useEffect(() => {
     testConnection().then((ok) => setFirestoreConnected(ok));
@@ -241,7 +296,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       setAuthReady(true);
 
       if (!nextUser) {
-        setHasAdminDoc(false);
+        setFirestoreStaffPermissions([]);
+        setFirestoreStaffSynced(false);
         setFirestoreOrders([]);
         setFirestoreNotifications([]);
         return;
@@ -264,13 +320,6 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           }
         } catch (err) {
           console.warn('Profile sync skipped:', err);
-        }
-
-        try {
-          const adminSnap = await getDoc(doc(db, 'admins', nextUser.uid));
-          setHasAdminDoc(adminSnap.exists());
-        } catch {
-          setHasAdminDoc(false);
         }
       }
     });
@@ -324,12 +373,62 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     return () => unsub();
   }, []);
 
+  // Staff permissions listener (Owner sees all; verified staff sees own permission record)
+  useEffect(() => {
+    if (!authReady || !user || !user.emailVerified || !user.email) return;
+
+    const ownerUser = isOwnerAccount(user.email, user.emailVerified);
+    const staffQuery = ownerUser
+      ? query(collection(db, 'staff_permissions'))
+      : query(
+          collection(db, 'staff_permissions'),
+          where('email', '==', normalizeEmail(user.email))
+        );
+
+    const unsubStaff = onSnapshot(
+      staffQuery,
+      (snapshot) => {
+        const docs: StaffPermission[] = snapshot.docs.map((d) => {
+          const data = d.data();
+          return {
+            id: d.id,
+            email: normalizeEmail(String(data.email ?? '')),
+            name: String(data.name ?? ''),
+            permissions: Array.isArray(data.permissions)
+              ? (data.permissions as AdminPermission[])
+              : [],
+            active: Boolean(data.active),
+            grantedBy: String(data.grantedBy ?? OWNER_ADMIN_EMAIL),
+            createdAtIso: timestampToIso(data.createdAt),
+            updatedAtIso: timestampToIso(data.updatedAt),
+          };
+        });
+        docs.sort((a, b) => a.email.localeCompare(b.email));
+        setFirestoreStaffPermissions(docs);
+        setFirestoreStaffSynced(true);
+      },
+      (error) => {
+        console.warn('Staff permissions listener fallback:', error);
+      }
+    );
+
+    return () => unsubStaff();
+  }, [authReady, user]);
+
   // Authenticated orders & notifications listeners
   useEffect(() => {
     if (!authReady || !user || !user.emailVerified) return;
 
-    const ordersQuery = isAdmin
+    const canManageOrders = hasAdminPermission(adminPermissions, 'manage_orders');
+    const normalizedUserEmail = normalizeEmail(user.email);
+
+    const ordersQuery = isOwner
       ? query(collection(db, 'orders'), orderBy('createdAt', 'desc'))
+      : canManageOrders && normalizedUserEmail
+      ? query(
+          collection(db, 'orders'),
+          where('authorizedStaffEmails', 'array-contains', normalizedUserEmail)
+        )
       : query(collection(db, 'orders'), where('userId', '==', user.uid));
 
     const unsubOrders = onSnapshot(
@@ -358,6 +457,9 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
             paymentStatus: data.paymentStatus,
             status: data.status,
             trackingNote: String(data.trackingNote ?? ''),
+            authorizedStaffEmails: Array.isArray(data.authorizedStaffEmails)
+              ? data.authorizedStaffEmails.map((e: unknown) => normalizeEmail(String(e)))
+              : undefined,
             createdAtIso: timestampToIso(data.createdAt),
             updatedAtIso: timestampToIso(data.updatedAt),
           };
@@ -370,7 +472,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       }
     );
 
-    const notifQuery = isAdmin
+    const notifQuery = isOwner
       ? query(collection(db, 'notifications'), orderBy('createdAt', 'desc'))
       : query(collection(db, 'notifications'), where('userId', '==', user.uid));
 
@@ -403,7 +505,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       unsubOrders();
       unsubNotifs();
     };
-  }, [authReady, user, isAdmin]);
+  }, [authReady, user, isOwner, adminPermissions]);
 
   const products = firestoreCatalogActive ? firestoreProducts : localProducts;
 
@@ -420,16 +522,38 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   }, [user, firestoreOrders, localOrders]);
 
   const notifications = useMemo(() => {
+    const merged = new Map<string, OrderNotification>();
     if (user && user.emailVerified) {
-      const merged = new Map<string, OrderNotification>();
       for (const n of localNotifications) merged.set(n.id, n);
       for (const n of firestoreNotifications) merged.set(n.id, n);
-      return Array.from(merged.values()).sort((a, b) =>
-        b.createdAtIso.localeCompare(a.createdAtIso)
-      );
+    } else {
+      for (const n of localNotifications) merged.set(n.id, n);
     }
-    return localNotifications;
-  }, [user, firestoreNotifications, localNotifications]);
+
+    const canSeeAdminLowStock =
+      isOwner ||
+      hasAdminPermission(adminPermissions, 'manage_stock') ||
+      hasAdminPermission(adminPermissions, 'manage_products') ||
+      hasAdminPermission(adminPermissions, 'view_overview');
+    const canSeeAdminOrders =
+      isOwner ||
+      hasAdminPermission(adminPermissions, 'manage_orders') ||
+      hasAdminPermission(adminPermissions, 'view_overview');
+
+    return Array.from(merged.values())
+      .filter((n) => {
+        if (n.userId === 'admin') {
+          if (!canAccessAdmin) return false;
+          if (n.type === 'low_stock') return canSeeAdminLowStock;
+          return canSeeAdminOrders;
+        }
+        if (user && user.emailVerified) {
+          return n.userId === user.uid || n.userId === 'demo-customer';
+        }
+        return n.userId === 'demo-customer';
+      })
+      .sort((a, b) => b.createdAtIso.localeCompare(a.createdAtIso));
+  }, [user, firestoreNotifications, localNotifications, isOwner, canAccessAdmin, adminPermissions]);
 
   const cartCount = useMemo(
     () => cart.reduce((sum, item) => sum + item.quantity, 0),
@@ -454,11 +578,15 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
   const logout = useCallback(async () => {
     await signOut(auth);
+    setActiveView((prev) => (prev === 'admin' ? 'storefront' : prev));
     showToast('Signed Out', 'You have been signed out of your account.');
   }, [showToast]);
 
   const seedCatalogToFirestore = useCallback(async () => {
-    if (!isAdmin) return;
+    if (!isOwner && !hasAdminPermission(adminPermissions, 'manage_products')) {
+      showToast('Permission Denied', 'You do not have permission to publish the store catalog.');
+      return;
+    }
     const batch = writeBatch(db);
     for (const p of SEED_PRODUCTS) {
       const ref = doc(db, 'products', p.id);
@@ -488,7 +616,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, 'products');
     }
-  }, [isAdmin, showToast]);
+  }, [isOwner, adminPermissions, showToast]);
 
   const addToCart = useCallback(
     (product: Product, quantity = 1, openDrawer = true) => {
@@ -577,6 +705,11 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       const orderId = `ord-${Date.now()}`;
       const ownerId = user?.uid ?? 'demo-customer';
       const isInstantPaid = form.paymentMethod !== 'cod';
+      const orderManagerStaffEmails = staffPermissions
+        .filter((s) => s.active && s.permissions.includes('manage_orders'))
+        .map((s) => normalizeEmail(s.email))
+        .filter(Boolean)
+        .slice(0, 10);
 
       const newOrder: Order = {
         id: orderId,
@@ -607,6 +740,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         paymentStatus: isInstantPaid ? 'paid' : 'pending',
         status: 'placed',
         trackingNote: getDefaultTrackingNote('placed', orderNumber),
+        authorizedStaffEmails: orderManagerStaffEmails,
         createdAtIso: nowIso,
         updatedAtIso: nowIso,
       };
@@ -668,6 +802,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           paymentStatus: newOrder.paymentStatus,
           status: newOrder.status,
           trackingNote: newOrder.trackingNote,
+          authorizedStaffEmails: orderManagerStaffEmails,
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
@@ -735,7 +870,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       showToast('Order Placed', `Order ${orderNumber} confirmed and inventory updated.`);
       return { ok: true, order: newOrder };
     },
-    [products, cart, user, firestoreCatalogActive, showToast]
+    [products, cart, user, firestoreCatalogActive, staffPermissions, showToast]
   );
 
   const updateOrderDetails = useCallback(
@@ -743,13 +878,18 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       orderId: string,
       updates: { status: OrderStatus; paymentStatus: PaymentStatus; trackingNote: string }
     ) => {
+      if (!isOwner && !hasAdminPermission(adminPermissions, 'manage_orders')) {
+        showToast('Permission Denied', 'You do not have permission to update orders.');
+        return;
+      }
+
       const target = orders.find((o) => o.id === orderId);
       if (!target) return;
 
       const nowIso = new Date().toISOString();
       const note = sanitizeText(updates.trackingNote, 240) || getDefaultTrackingNote(updates.status, target.orderNumber);
 
-      if (isAdmin && firestoreOrders.some((o) => o.id === orderId)) {
+      if (canAccessAdmin && firestoreOrders.some((o) => o.id === orderId)) {
         try {
           await updateDoc(doc(db, 'orders', orderId), {
             status: updates.status,
@@ -802,7 +942,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       setLocalNotifications((prev) => [notif, ...prev]);
       showToast('Order Updated', `${target.orderNumber} marked as ${updates.status}.`);
     },
-    [orders, isAdmin, firestoreOrders, showToast]
+    [orders, isOwner, canAccessAdmin, adminPermissions, firestoreOrders, showToast]
   );
 
   const advanceOrderStatus = useCallback(
@@ -871,12 +1011,21 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
   const adjustProductStock = useCallback(
     async (productId: string, delta: number) => {
+      if (
+        !isOwner &&
+        !hasAdminPermission(adminPermissions, 'manage_stock') &&
+        !hasAdminPermission(adminPermissions, 'manage_products')
+      ) {
+        showToast('Permission Denied', 'You do not have permission to adjust inventory stock.');
+        return;
+      }
+
       const target = products.find((p) => p.id === productId);
       if (!target) return;
       const nextStock = Math.max(0, Math.floor(target.stock + delta));
       const nowIso = new Date().toISOString();
 
-      if (isAdmin && firestoreCatalogActive) {
+      if (canAccessAdmin && firestoreCatalogActive) {
         try {
           await updateDoc(doc(db, 'products', productId), {
             stock: nextStock,
@@ -908,11 +1057,15 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         ]);
       }
     },
-    [products, isAdmin, firestoreCatalogActive]
+    [products, isOwner, canAccessAdmin, adminPermissions, firestoreCatalogActive, showToast]
   );
 
   const saveProduct = useCallback(
     async (input: ProductSaveInput): Promise<{ ok: boolean; error?: string }> => {
+      if (!isOwner && !hasAdminPermission(adminPermissions, 'manage_products')) {
+        return { ok: false, error: 'You do not have permission to add or edit products.' };
+      }
+
       const cleanName = sanitizeText(input.name, 120);
       const cleanSku = sanitizeText(input.sku, 40).toUpperCase().replace(/[^A-Z0-9_-]/g, '-');
       const cleanDesc = sanitizeText(input.shortDescription, 300);
@@ -954,7 +1107,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         updatedAtIso: nowIso,
       };
 
-      if (isAdmin && firestoreCatalogActive) {
+      if (canAccessAdmin && firestoreCatalogActive) {
         try {
           const ref = doc(db, 'products', id);
           if (existingProd) {
@@ -1013,12 +1166,17 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       showToast('Inventory Saved', `${nextProduct.name} (${nextProduct.stock} in stock) updated.`);
       return { ok: true };
     },
-    [products, isAdmin, firestoreCatalogActive, showToast]
+    [products, isOwner, canAccessAdmin, adminPermissions, firestoreCatalogActive, showToast]
   );
 
   const deleteProduct = useCallback(
     async (productId: string) => {
-      if (isAdmin && firestoreCatalogActive) {
+      if (!isOwner && !hasAdminPermission(adminPermissions, 'manage_products')) {
+        showToast('Permission Denied', 'You do not have permission to delete products.');
+        return;
+      }
+
+      if (canAccessAdmin && firestoreCatalogActive) {
         try {
           await deleteDoc(doc(db, 'products', productId));
         } catch (error) {
@@ -1030,7 +1188,161 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       setCart((prev) => prev.filter((c) => c.productId !== productId));
       showToast('Product Removed', 'Item removed from store catalog.');
     },
-    [isAdmin, firestoreCatalogActive, showToast]
+    [isOwner, canAccessAdmin, adminPermissions, firestoreCatalogActive, showToast]
+  );
+
+  const syncAuthorizedOrderStaffEmails = useCallback(
+    async (nextStaffList: StaffPermission[]) => {
+      if (!isOwner || firestoreOrders.length === 0) return;
+      const authorizedEmails = nextStaffList
+        .filter((s) => s.active && s.permissions.includes('manage_orders'))
+        .map((s) => normalizeEmail(s.email))
+        .filter(Boolean)
+        .slice(0, 10);
+
+      const batch = writeBatch(db);
+      for (const ord of firestoreOrders) {
+        batch.update(doc(db, 'orders', ord.id), {
+          authorizedStaffEmails: authorizedEmails,
+          updatedAt: serverTimestamp(),
+        });
+      }
+      try {
+        await batch.commit();
+      } catch (err) {
+        console.warn('Order staff sync warning:', err);
+      }
+    },
+    [isOwner, firestoreOrders]
+  );
+
+  const saveStaffPermission = useCallback(
+    async (input: StaffPermissionSaveInput): Promise<{ ok: boolean; error?: string }> => {
+      if (!isOwner) {
+        return { ok: false, error: 'Only the store owner can manage admin permissions.' };
+      }
+      const cleanEmail = normalizeEmail(input.email);
+      const cleanName = sanitizeText(input.name, 100);
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+        return { ok: false, error: 'Enter a valid Google account email address.' };
+      }
+      if (cleanEmail === OWNER_ADMIN_EMAIL) {
+        return { ok: false, error: 'Store owner already holds full permanent permissions.' };
+      }
+      if (cleanName.length < 1) {
+        return { ok: false, error: 'Enter a display name or role label for this team member.' };
+      }
+      const scopedPerms = input.permissions.filter(
+        (p): p is AdminPermission => p !== 'manage_permissions'
+      );
+      if (scopedPerms.length === 0) {
+        return { ok: false, error: 'Select at least one permission to grant.' };
+      }
+
+      const permId = emailToPermissionDocId(cleanEmail);
+      const nowIso = new Date().toISOString();
+      const existingEntry = staffPermissions.find((s) => s.id === permId);
+      const active = input.active ?? true;
+
+      const record: StaffPermission = {
+        id: permId,
+        email: cleanEmail,
+        name: cleanName,
+        permissions: scopedPerms,
+        active,
+        grantedBy: OWNER_ADMIN_EMAIL,
+        createdAtIso: existingEntry?.createdAtIso ?? nowIso,
+        updatedAtIso: nowIso,
+      };
+
+      try {
+        const ref = doc(db, 'staff_permissions', permId);
+        if (existingEntry) {
+          await updateDoc(ref, {
+            name: record.name,
+            permissions: record.permissions,
+            active: record.active,
+            grantedBy: OWNER_ADMIN_EMAIL,
+            updatedAt: serverTimestamp(),
+          });
+        } else {
+          await setDoc(ref, {
+            email: record.email,
+            name: record.name,
+            permissions: record.permissions,
+            active: record.active,
+            grantedBy: OWNER_ADMIN_EMAIL,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+        }
+      } catch (error) {
+        handleFirestoreError(error, OperationType.WRITE, `staff_permissions/${permId}`);
+      }
+
+      const nextList = existingEntry
+        ? staffPermissions.map((s) => (s.id === permId ? record : s))
+        : [...staffPermissions, record];
+
+      setLocalStaffPermissions(nextList);
+      await syncAuthorizedOrderStaffEmails(nextList);
+
+      showToast(
+        'Permissions Updated',
+        `${cleanEmail} granted ${scopedPerms.length} admin capability(s).`
+      );
+      return { ok: true };
+    },
+    [isOwner, staffPermissions, syncAuthorizedOrderStaffEmails, showToast]
+  );
+
+  const toggleStaffPermissionActive = useCallback(
+    async (permId: string, active: boolean) => {
+      if (!isOwner) return;
+      const target = staffPermissions.find((s) => s.id === permId);
+      if (!target) return;
+
+      try {
+        await updateDoc(doc(db, 'staff_permissions', permId), {
+          active,
+          updatedAt: serverTimestamp(),
+        });
+      } catch (error) {
+        handleFirestoreError(error, OperationType.UPDATE, `staff_permissions/${permId}`);
+      }
+
+      const nextList = staffPermissions.map((s) =>
+        s.id === permId ? { ...s, active, updatedAtIso: new Date().toISOString() } : s
+      );
+      setLocalStaffPermissions(nextList);
+      await syncAuthorizedOrderStaffEmails(nextList);
+
+      showToast(
+        active ? 'Access Restored' : 'Access Paused',
+        `${target.email} is now ${active ? 'active' : 'paused'}.`
+      );
+    },
+    [isOwner, staffPermissions, syncAuthorizedOrderStaffEmails, showToast]
+  );
+
+  const deleteStaffPermission = useCallback(
+    async (permId: string) => {
+      if (!isOwner) return;
+      const target = staffPermissions.find((s) => s.id === permId);
+
+      try {
+        await deleteDoc(doc(db, 'staff_permissions', permId));
+      } catch (error) {
+        handleFirestoreError(error, OperationType.DELETE, `staff_permissions/${permId}`);
+      }
+
+      const nextList = staffPermissions.filter((s) => s.id !== permId);
+      setLocalStaffPermissions(nextList);
+      await syncAuthorizedOrderStaffEmails(nextList);
+
+      showToast('Access Revoked', `${target?.email || 'User'} removed from admin access.`);
+    },
+    [isOwner, staffPermissions, syncAuthorizedOrderStaffEmails, showToast]
   );
 
   const markNotificationRead = useCallback(
@@ -1073,7 +1385,11 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     setSelectedTrackOrderNumber,
     user,
     authReady,
+    isOwner,
+    canAccessAdmin,
     isAdmin,
+    adminPermissions,
+    staffPermissions,
     firestoreConnected,
     firestoreCatalogActive,
     products,
@@ -1104,6 +1420,9 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     saveProduct,
     deleteProduct,
     seedCatalogToFirestore,
+    saveStaffPermission,
+    toggleStaffPermissionActive,
+    deleteStaffPermission,
     markNotificationRead,
     markAllNotificationsRead,
   };

@@ -1,11 +1,14 @@
 import {
+  ALL_ADMIN_PERMISSIONS,
   FIELD_LIMITS,
+  type AdminPermission,
   type CartItem,
   type CheckoutFormInput,
   type OrderStatus,
   type Product,
   type ProductCategory,
   type SortOption,
+  type StaffPermission,
 } from '../types/commerce';
 
 export const FREE_SHIPPING_THRESHOLD = 50;
@@ -282,3 +285,70 @@ export function generateOrderNumber(): string {
   const rand = Math.floor(1000 + Math.random() * 9000);
   return `AB-${rand}`;
 }
+
+export const OWNER_ADMIN_EMAIL = 'parvejmollik2022@gmail.com';
+
+export function normalizeEmail(email?: string | null): string {
+  return (email ?? '').trim().toLowerCase();
+}
+
+export function emailToPermissionDocId(email: string): string {
+  return normalizeEmail(email).replace(/[^a-z0-9]/g, '_');
+}
+
+export function isOwnerAccount(
+  email?: string | null,
+  emailVerified?: boolean | null
+): boolean {
+  return Boolean(emailVerified) && normalizeEmail(email) === OWNER_ADMIN_EMAIL;
+}
+
+export interface ResolvedAdminAccess {
+  isOwner: boolean;
+  canAccessAdmin: boolean;
+  permissions: AdminPermission[];
+}
+
+export function resolveAdminAccess(
+  email?: string | null,
+  emailVerified?: boolean | null,
+  staffList: StaffPermission[] = []
+): ResolvedAdminAccess {
+  if (isOwnerAccount(email, emailVerified)) {
+    return {
+      isOwner: true,
+      canAccessAdmin: true,
+      permissions: [...ALL_ADMIN_PERMISSIONS],
+    };
+  }
+
+  const normalized = normalizeEmail(email);
+  if (!emailVerified || !normalized) {
+    return { isOwner: false, canAccessAdmin: false, permissions: [] };
+  }
+
+  const entry = staffList.find(
+    (s) => s.active && normalizeEmail(s.email) === normalized
+  );
+  if (!entry || entry.permissions.length === 0) {
+    return { isOwner: false, canAccessAdmin: false, permissions: [] };
+  }
+
+  // Staff never inherit owner-only permission management
+  const scopedPermissions = entry.permissions.filter(
+    (p): p is AdminPermission => p !== 'manage_permissions'
+  );
+  return {
+    isOwner: false,
+    canAccessAdmin: scopedPermissions.length > 0,
+    permissions: scopedPermissions,
+  };
+}
+
+export function hasAdminPermission(
+  permissions: AdminPermission[],
+  required: AdminPermission
+): boolean {
+  return permissions.includes(required);
+}
+

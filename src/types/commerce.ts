@@ -24,6 +24,59 @@ export type OrderStatus =
 
 export type NotificationType = 'order_placed' | 'status_update' | 'low_stock';
 
+export type AdminPermission =
+  | 'view_overview'
+  | 'manage_stock'
+  | 'manage_products'
+  | 'manage_orders'
+  | 'manage_permissions';
+
+export const ALL_ADMIN_PERMISSIONS: AdminPermission[] = [
+  'view_overview',
+  'manage_stock',
+  'manage_products',
+  'manage_orders',
+  'manage_permissions',
+];
+
+export const STAFF_GRANTABLE_PERMISSIONS: {
+  id: Exclude<AdminPermission, 'manage_permissions'>;
+  label: string;
+  description: string;
+}[] = [
+  {
+    id: 'view_overview',
+    label: 'View Overview',
+    description: 'See store revenue, order counts, and stock summary KPIs',
+  },
+  {
+    id: 'manage_stock',
+    label: 'Adjust Stock',
+    description: 'Increase or decrease product inventory units',
+  },
+  {
+    id: 'manage_products',
+    label: 'Manage Products',
+    description: 'Create, edit, and remove store products',
+  },
+  {
+    id: 'manage_orders',
+    label: 'Manage Orders',
+    description: 'View customer orders and update shipment status',
+  },
+];
+
+export interface StaffPermission {
+  id: string;
+  email: string;
+  name: string;
+  permissions: AdminPermission[];
+  active: boolean;
+  grantedBy: string;
+  createdAtIso: string;
+  updatedAtIso: string;
+}
+
 export const FIELD_LIMITS = {
   productNameMax: 120,
   skuMax: 40,
@@ -101,6 +154,7 @@ export interface Order {
   paymentStatus: PaymentStatus;
   status: OrderStatus;
   trackingNote: string;
+  authorizedStaffEmails?: string[];
   createdAtIso: string;
   updatedAtIso: string;
 }

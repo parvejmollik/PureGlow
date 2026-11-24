@@ -237,6 +237,10 @@
           "type": "string",
           "maxLength": 240
         },
+        "authorizedStaffEmails": {
+          "type": "array",
+          "description": "Bounded list of active staff emails authorized to manage orders (max 10)"
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time"
@@ -310,6 +314,44 @@
         }
       },
       "required": ["userId", "title", "message", "type", "read", "createdAt"]
+    },
+    "StaffPermission": {
+      "title": "StaffPermission",
+      "description": "Granular admin capabilities delegated by the store owner to specific verified emails.",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 160
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "permissions": {
+          "type": "array",
+          "description": "Subset of view_overview, manage_stock, manage_products, manage_orders"
+        },
+        "active": {
+          "type": "boolean"
+        },
+        "grantedBy": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 160
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["email", "name", "permissions", "active", "grantedBy", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -328,6 +370,10 @@
     "/notifications/{notificationId}": {
       "schema": { "$ref": "#/entities/OrderNotification" },
       "description": "Order status updates and admin low-stock alerts."
+    },
+    "/staff_permissions/{permId}": {
+      "schema": { "$ref": "#/entities/StaffPermission" },
+      "description": "Owner-managed granular admin permissions keyed by normalized email."
     }
   }
 }
